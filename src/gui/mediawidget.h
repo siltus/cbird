@@ -28,6 +28,7 @@ class MediaWidgetOptions {
     FlagFastSeek = 1 << 1,       /// use fast but inaccurate seek for thumbnails
     FlagSelectFirst = 1 << 2,    /// set initial selection to first item
     FlagDisableDelete = 1 << 3,  /// do not allow deletion of files
+    FlagNoGifAnimation = 1 << 4, /// disable animated GIF playback (show first frame only)
   };
   int flags = FlagsNone;
 

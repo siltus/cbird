@@ -53,6 +53,7 @@
 #include <QtGui/QKeyEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QMovie>
 
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMenu>
@@ -375,8 +376,11 @@ MediaGroupListWidget::MediaGroupListWidget(const MediaGroupList& list,
 
     if (!page->isLoaded())
       loadMedia(page);
-    else if (_preloadPage)
-      loadMedia(_preloadPage);
+    else {
+      startMovies();
+      if (_preloadPage)
+        loadMedia(_preloadPage);
+    }
   });
 
   // take care of oom on the image loaders
@@ -644,6 +648,7 @@ MediaGroupListWidget::MediaGroupListWidget(const MediaGroupList& list,
 
 MediaGroupListWidget::~MediaGroupListWidget() {
   qDebug("~MediaGroupListWidget");
+  stopMovies();
   qMessageLogCategoryEnable("qt.gui.imageio.jpeg", true);
   qMessageLogCategoryEnable("qt.gui.icc", true);
 
@@ -914,6 +919,7 @@ void MediaGroupListWidget::removeSiblings(bool deleteFiles) {
   }
 
   if (deleteFiles) {
+    stopMovies(); // release file handles before trash
     QVector<int> toRemoveIds;
     for (const Media& m : toRemove) {
       if (!DesktopHelper::moveToTrash(m.path())) return;
@@ -968,6 +974,18 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
 
   QSet<int> removedIndices; // group indexes
   QSet<int> removedIds; // database media ids
+
+  // stop QMovie on items about to be deleted (releases file handles)
+  if (deleteFiles) {
+    for (int i = 0; i < items.count(); ++i) {
+      int index = items[i]->type();
+      if (QMovie* movie = _movies.value(index)) {
+        movie->stop();
+        delete movie;
+        _movies.remove(index);
+      }
+    }
+  }
 
   for (int i = 0; i < items.count(); ++i) {
     int index = items[i]->type();
@@ -2412,8 +2430,10 @@ void MediaGroupListWidget::loadOne(MediaPage* page, int index) {
     if (updated && !preload) {
       _updateTimer.start(1000 / LW_UPDATE_HZ);
 
-      if (w->page->isLoaded() && _preloadPage)
-        _loadTimer.start(LW_PRELOAD_DELAY);
+      if (w->page->isLoaded()) {
+        if (_preloadPage) _loadTimer.start(LW_PRELOAD_DELAY);
+        startMovies();
+      }
     }
 
     if (updated && w->page == _preloadPage) {
@@ -2477,6 +2497,52 @@ void MediaGroupListWidget::loadMedia(MediaPage* page) {
   recursion--;
 }
 
+void MediaGroupListWidget::stopMovies() {
+  for (QMovie* movie : std::as_const(_movies)) {
+    movie->stop();
+    delete movie;
+  }
+  _movies.clear();
+}
+
+void MediaGroupListWidget::startMovies() {
+  if (_options.flags & MediaWidgetOptions::FlagNoGifAnimation) return;
+
+  stopMovies();
+
+  const MediaPage* page = currentPage();
+  const MediaGroup& group = page->group;
+
+  for (int i = 0; i < group.count(); ++i) {
+    const Media& m = group[i];
+    if (m.type() != Media::TypeImage) continue;
+    if (m.suffix().toLower() != "gif") continue;
+
+    auto* movie = new QMovie(m.path(), QByteArray(), this);
+    if (movie->frameCount() <= 1) {
+      delete movie;
+      continue;
+    }
+
+    const int index = i;
+    connect(movie, &QMovie::frameChanged, this, [this, index, movie]() {
+      MediaPage* page = currentPage();
+      if (index >= page->group.count()) return;
+      Media& m = page->group[index];
+      QImage frame = movie->currentImage();
+      if (!frame.isNull()) {
+        QImage::Format fmt = QImage::Format_RGB32;
+        if (frame.hasAlphaChannel()) fmt = QImage::Format_ARGB32;
+        m.setImage(frame.convertToFormat(fmt));
+        viewport()->update();
+      }
+    });
+
+    _movies.insert(i, movie);
+    movie->start();
+  }
+}
+
 void MediaGroupListWidget::loadRow(int row, bool preloadNextRow) {
   static uint64_t start = nanoTime();
 
@@ -2496,6 +2562,7 @@ void MediaGroupListWidget::loadRow(int row, bool preloadNextRow) {
   qDebug() << "page" << _currentRow << "=>" << row;
   int rowSkip = row - _currentRow;
   _currentRow = row;
+  stopMovies();
   clear();
 
   _itemDelegate->setPage(page);

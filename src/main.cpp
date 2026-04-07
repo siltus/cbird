@@ -1666,6 +1666,8 @@ int main(int argc, char** argv) {
       widgetOptions.flags |= MediaWidgetOptions::FlagSelectFirst;
     } else if (arg == "-no-delete") {
       widgetOptions.flags |= MediaWidgetOptions::FlagDisableDelete;
+    } else if (arg == "-no-gif-animation") {
+      widgetOptions.flags |= MediaWidgetOptions::FlagNoGifAnimation;
     } else if (arg == "-theme") {
       Theme::setDefaultStyle(nextArg());
     } else if (arg == "-show") {
