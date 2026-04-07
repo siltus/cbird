@@ -437,6 +437,10 @@ MediaGroupListWidget::MediaGroupListWidget(const MediaGroupList& list,
   WidgetHelper::addAction(settings, "File/Delete File", Qt::Key_D, this, SLOT(deleteAction()))
       ->setEnabled(!(_options.flags & MediaWidgetOptions::FlagDisableDelete));
 
+  WidgetHelper::addAction(settings, "File/Force Delete File", Qt::SHIFT | Qt::Key_D, this,
+                          SLOT(forceDeleteAction()))
+      ->setEnabled(!(_options.flags & MediaWidgetOptions::FlagDisableDelete));
+
   WidgetHelper::addAction(settings, "File/Replace File", Qt::Key_F, this, SLOT(replaceAction()))
       ->setEnabled(!(_options.flags & MediaWidgetOptions::FlagDisableDelete));
 
@@ -935,9 +939,11 @@ void MediaGroupListWidget::removeSiblings(bool deleteFiles) {
 
 void MediaGroupListWidget::deleteAction() { removeSelection(true); }
 
+void MediaGroupListWidget::forceDeleteAction() { removeSelection(true, false, true); }
+
 void MediaGroupListWidget::replaceAction() { removeSelection(true, true); }
 
-void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace) {
+void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool skipConfirm) {
   QList<QListWidgetItem*> items = selectedItems();
   Q_ASSERT((!deleteFiles && !replace) || (deleteFiles && !replace) || (deleteFiles && replace));
 
@@ -946,7 +952,7 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace) {
   const int groupCount = page->countNonAnalysis();
 
   // warn before deleting everything in the group
-  if (deleteFiles && items.count() == groupCount) {
+  if (deleteFiles && !skipConfirm && items.count() == groupCount) {
     QMessageBox dialog(QMessageBox::Warning, qq("Delete Entire Group?"),
                        qq("All %1 items in this group are selected for deletion.\n\n"
                           "Are you sure you want to delete all of them?")
