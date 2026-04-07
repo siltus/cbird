@@ -72,10 +72,10 @@ void DctFeaturesIndex::addRecords(QSqlDatabase& db, const MediaGroup& media) con
   }
 }
 
-void DctFeaturesIndex::removeRecords(QSqlDatabase& db, const QVector<int>& mediaIds) const {
+void DctFeaturesIndex::removeRecords(QSqlDatabase& db, const QVector<QString>& idBatches) const {
   QSqlQuery query(db);
-  for (auto id : mediaIds)
-    if (!query.exec("delete from kphash where media_id=" + QString::number(id))) SQL_FATAL(exec);
+  for (const QString& batch : idBatches)
+    if (!query.exec("delete from kphash where media_id in (" + batch + ")")) SQL_FATAL(exec);
 }
 
 void DctFeaturesIndex::init() {

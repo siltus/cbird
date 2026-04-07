@@ -200,10 +200,18 @@ class Index {
     (void)media;
   }
 
-  /// Remove items from the database
-  virtual void removeRecords(QSqlDatabase& db, const QVector<int>& mediaIds) const {
+  /// Remove items from the database (batched IN-clause version)
+  virtual void removeRecords(QSqlDatabase& db, const QVector<QString>& idBatches) const {
     (void)db;
-    (void)mediaIds;
+    (void)idBatches;
+  }
+
+  /// Remove items from the database (convenience overload)
+  virtual void removeRecords(QSqlDatabase& db, const QVector<int>& mediaIds) const {
+    QStringList all;
+    for (int id : mediaIds) all << QString::number(id);
+    QVector<QString> batches{all.join(',')};
+    removeRecords(db, batches);
   }
 
   /**

@@ -77,10 +77,10 @@ void ColorDescIndex::addRecords(QSqlDatabase& db, const MediaGroup& media) const
   }
 }
 
-void ColorDescIndex::removeRecords(QSqlDatabase& db, const QVector<int>& mediaIds) const {
+void ColorDescIndex::removeRecords(QSqlDatabase& db, const QVector<QString>& idBatches) const {
   QSqlQuery query(db);
-  for (auto id : mediaIds)
-    if (!query.exec("delete from color where media_id=" + QString::number(id))) SQL_FATAL(exec);
+  for (const QString& batch : idBatches)
+    if (!query.exec("delete from color where media_id in (" + batch + ")")) SQL_FATAL(exec);
 }
 
 void ColorDescIndex::unload() {
