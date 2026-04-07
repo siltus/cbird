@@ -1,0 +1,7 @@
+# Ensure shell scripts always use LF (needed for Docker/Linux builds)
+*.sh text eol=lf
+*.env text eol=lf
+Dockerfile* text eol=lf
+# Scripts without extension
+tools/ff-compare-audio text eol=lf
+tools/ffplay-sbs text eol=lf

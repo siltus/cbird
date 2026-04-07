@@ -945,10 +945,14 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace) {
 
   const int groupCount = page->countNonAnalysis();
 
-  // guard against deleting everything
+  // warn before deleting everything in the group
   if (deleteFiles && items.count() == groupCount) {
-    qWarning() << "assuming unintentional deletion of entire group; no action taken";
-    return;
+    QMessageBox dialog(QMessageBox::Warning, qq("Delete Entire Group?"),
+                       qq("All %1 items in this group are selected for deletion.\n\n"
+                          "Are you sure you want to delete all of them?")
+                           .arg(groupCount),
+                       QMessageBox::No | QMessageBox::Yes, this);
+    if (Theme::instance().execDialog(&dialog) != QMessageBox::Yes) return;
   }
 
   if (deleteFiles && replace && items.count() == 1 && !page->isPair()) {
