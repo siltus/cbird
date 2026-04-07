@@ -25,6 +25,8 @@
 #include <QtCore/QTimer>
 #include <QtWidgets/QListWidget>
 
+class QMovie;
+
 class Database;
 class MediaItemDelegate;
 class MediaPage;
@@ -354,4 +356,12 @@ class MediaGroupListWidget : public QListWidget {
   QTimer _oomGuard;   // fires occasionally to prevent system oom condition
 
   QTimer _oomTimer; // fires when we are oom on the image loader
+
+  QHash<int, QMovie*> _movies; // animated GIF players keyed by group index
+
+  /// Start QMovie for animated GIFs on the current page
+  void startMovies();
+
+  /// Stop and delete all active QMovie instances
+  void stopMovies();
 };
