@@ -82,6 +82,9 @@ class MediaGroupListWidget : public QListWidget {
   /// Move selected files to trash
   void deleteAction();
 
+  /// Move selected files to trash, skip confirmation even if all selected
+  void forceDeleteAction();
+
   /// Delete selected file, replace with other file (if there a pair)
   void replaceAction();
 
@@ -216,7 +219,7 @@ class MediaGroupListWidget : public QListWidget {
    * @details If the item is deleted successfully and group contains one item,
    * move to the next group
    */
-  void removeSelection(bool deleteFiles, bool replace = false);
+  void removeSelection(bool deleteFiles, bool replace = false, bool skipConfirm = false);
 
   /// remove siblings from all pages
   void removeSiblings(bool deleteFiles);

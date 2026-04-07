@@ -22,6 +22,7 @@ pkg_begin opencv-${CV_VERSION} &&
 step_configure &&
     cmake -G Ninja ${CV_OPTIONS} \
         -D CMAKE_BUILD_TYPE=Release \
+        -D ENABLE_PRECOMPILED_HEADERS=OFF \
         -D BUILD_ZLIB=OFF \
         -D WITH_OPENEXR=OFF \
         -D WITH_JASPER=OFF \

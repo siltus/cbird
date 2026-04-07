@@ -16,7 +16,7 @@ group_begin "FFmpeg deps"
     step_configure &&
     step_build &&
         make PREFIX=$MXE_DIR/usr/$MXE_TARGET &&
-        ${INSTALL_SUDO} make install &&
+        ${INSTALL_SUDO} make PREFIX=$MXE_DIR/usr/$MXE_TARGET install &&
     pkg_end
 ) || exit 1
 

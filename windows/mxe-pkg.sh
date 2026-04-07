@@ -17,9 +17,6 @@ fi
 
 echo building $VERSION $ARCH in $PKG_DIR
 
-# we need this for dll discovery
-mkdir -p _index
-
 echo "programs..."
 mkdir -p "$PKG_DIR"
 cp -au cbird.exe "$PKG_DIR/"
@@ -41,9 +38,6 @@ cp -auv "$QT_DIR/plugins/styles" "$PKG_DIR/plugins/"
 #  cp -auv "$cap" "$PKG_DIR/termcap/"
 #done
 
-# for some reason loop below won't pickup zlib
-cp -au "$MXE_DIR/usr/$MXE_TARGET/bin/zlib1.dll" "$PKG_DIR/"
-
 for exe in sqlite3.exe; do
     cp -au "$MXE_DIR/usr/$MXE_TARGET/bin/$exe" "$PKG_DIR/"
 done
@@ -52,34 +46,47 @@ for exe in ffplay.exe ffprobe.exe ffmpeg.exe; do
     cp -auv "$CROSS_BIN/$exe" "$PKG_DIR/"
 done
 
-# use wine to find the dlls and copy them to package dir
-# script needs to be run until no more errors appear
+# use objdump to recursively find all DLL dependencies
+# (replaces the old wine-based approach which required wine to be installed)
+OBJDUMP="$MXE_DIR/usr/bin/$MXE_TARGET-objdump"
+DLL_DIRS=("$CROSS_BIN" "$OPENCV_BIN" "$QT_BIN" "$MXE_BIN")
 
-# disable for development
-#echo !!!! dlls are not being copied for speed !!!!
-#exit 0
+declare -A SEEN_DLLS
+collect_deps() {
+    local file="$1"
+    local base
+    base=$(basename "$file" | tr '[:upper:]' '[:lower:]')
+    [[ ${SEEN_DLLS[$base]+x} ]] && return
+    SEEN_DLLS[$base]=1
 
-for exe in cbird.exe sqlite3.exe ffplay.exe ffprobe.exe ffmpeg.exe; do
-#for exe in cbird.exe ffmpeg.exe ffplay.exe ffprobe.exe; do
-    
-    PASS=1
-    while [ $PASS -ge 1 ]; do
-        echo "collecting dlls for $exe (pass $PASS) ..."
-        LAST=$PASS
-        PASS=0
-        DLLS=`wine "$PKG_DIR/$exe" -about 2>&1 | grep :err:module:import_dll | cut -d' ' -f3`
-        for x in $DLLS; do
-            if   [ -e "$CROSS_BIN/$x"  ]; then cp -auv "$CROSS_BIN/$x" "$PKG_DIR/"
-            elif [ -e "$OPENCV_BIN/$x" ]; then cp -auv "$OPENCV_BIN/$x" "$PKG_DIR/"
-            elif [ -e "$QT_BIN/$x"     ]; then cp -auv "$QT_BIN/$x" "$PKG_DIR/"
-            elif [ -e "$MXE_BIN/$x"    ]; then cp -auv "$MXE_BIN/$x" "$PKG_DIR/"
-            else
-                echo "can't find dll: $x"
-                exit 1
+    local deps
+    deps=$("$OBJDUMP" -p "$file" 2>/dev/null | awk '/DLL Name:/{print $3}')
+    for dll in $deps; do
+        local dlower
+        dlower=$(echo "$dll" | tr '[:upper:]' '[:lower:]')
+        [[ ${SEEN_DLLS[$dlower]+x} ]] && continue
+
+        local found=""
+        for dir in "${DLL_DIRS[@]}"; do
+            if [ -f "$dir/$dll" ]; then
+                found="$dir/$dll"
+                break
             fi
-            PASS=$(($LAST + 1))
         done
+
+        if [ -n "$found" ]; then
+            cp -auv "$found" "$PKG_DIR/"
+            collect_deps "$found"
+        fi
     done
+}
+
+echo "collecting dlls..."
+for file in "$PKG_DIR"/*.exe; do
+    [ -f "$file" ] && collect_deps "$file"
+done
+for file in $(find "$PKG_DIR/plugins" -name '*.dll' 2>/dev/null); do
+    collect_deps "$file"
 done
 
 echo "strip binaries..."
