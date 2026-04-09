@@ -105,6 +105,7 @@ QSqlDatabase Database::connect(int id) {
   // we'd prefer case-insensitive like for matching file names
   QSqlQuery query(db);
   if (!query.exec("pragma case_sensitive_like = true;")) SQL_FATAL(exec);
+  if (!query.exec("pragma synchronous = NORMAL;")) SQL_FATAL(exec);
 
   //    qDebug("thread=%p %s %s",
   //        thread,
@@ -549,26 +550,33 @@ void Database::remove(const QVector<int>& ids) {
     return;
   }
 
+  // build batch IN-clause strings (SQLite limit ~999 params)
+  constexpr int batchSize = 500;
+  QVector<QString> idBatches;
+  for (int i = 0; i < ids.size(); i += batchSize) {
+    QStringList batch;
+    for (int j = i; j < qMin(i + batchSize, ids.size()); ++j)
+      batch << QString::number(ids[j]);
+    idBatches << batch.join(',');
+  }
+
   QSqlQuery query(connect());
 
   connect().transaction();
 
   // TODO: vacuum database after a lot of deletions
 
-  // TODO: see if we should delete in reverse order of creation; maybe it
-  // fragments the database file less?
 #ifdef ENABLE_KEYPOINTS_DB
-  for (int id : ids) ("delete from keypoint where media_id=" + QString::number(id));
-
-  qInfo("delete keypoint=%dms", (int)((now - then) / 1000000));
+  for (const QString& batch : idBatches)
+    if (!query.exec("delete from keypoint where media_id in (" + batch + ")")) SQL_FATAL(exec);
 #endif
 
   {
-    PROGRESS_LOGGER(pl, "removing metadata:<PL> %percent %step items", ids.count());
+    PROGRESS_LOGGER(pl, "removing metadata:<PL> %percent %step batches", idBatches.count());
     int step = 0;
-    for (int id : ids) {
+    for (const QString& batch : idBatches) {
       pl.stepRateLimited(step++);
-      if (!query.exec("delete from media where id=" + QString::number(id))) SQL_FATAL(exec);
+      if (!query.exec("delete from media where id in (" + batch + ")")) SQL_FATAL(exec);
     }
     connect().commit();
     pl.end(step);
@@ -584,7 +592,7 @@ void Database::remove(const QVector<int>& ids) {
       if (!db.transaction()) qFatal("create transaction: %s", qPrintable(db.lastError().text()));
       pl.stepRateLimited(step++);
 
-      i->removeRecords(db, ids);
+      i->removeRecords(db, idBatches);
       pl.stepRateLimited(step++);
 
       if (!db.commit()) qFatal("commit transaction: %s", qPrintable(db.lastError().text()));
@@ -594,7 +602,6 @@ void Database::remove(const QVector<int>& ids) {
   }
 
   // if it's a video, delete the hash file
-  // TODO: this could be in removeRecords()
   {
     int step = 0;
     PROGRESS_LOGGER(pl, "removing videos:<PL> %percent %step items", ids.count());

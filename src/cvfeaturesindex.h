@@ -43,7 +43,7 @@ class CvFeaturesIndex : public Index {
 
   void createTables(QSqlDatabase& db) const override;
   void addRecords(QSqlDatabase& db, const MediaGroup& media) const override;
-  void removeRecords(QSqlDatabase& db, const QVector<int>& mediaIds) const override;
+  void removeRecords(QSqlDatabase& db, const QVector<QString>& idBatches) const override;
 
   QSet<mediaid_t> mediaIds(QSqlDatabase& db,
                            const QString& cachePath,

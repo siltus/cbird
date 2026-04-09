@@ -36,7 +36,7 @@ class ColorDescIndex : public Index {
 
   void createTables(QSqlDatabase& db) const override;
   void addRecords(QSqlDatabase& db, const MediaGroup& media) const override;
-  void removeRecords(QSqlDatabase& db, const QVector<int>& mediaIds) const override;
+  void removeRecords(QSqlDatabase& db, const QVector<QString>& idBatches) const override;
 
   bool isLoaded() const override;
   size_t memoryUsage() const override;
