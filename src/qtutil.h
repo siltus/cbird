@@ -198,6 +198,11 @@ class MessageContext {
   void reset(const QString& context);
 };
 
+/// Return a privacy-safe version of a file path for logging.
+/// With -pii flag: returns an 8-char hex hash of the path.
+/// Without -pii: returns the path unchanged.
+QString logSafePath(const QString& path);
+
 #if QT_VERSION_MAJOR > 5
 QPartialOrdering qVariantCompare(const QVariant& a, const QVariant& b);
 

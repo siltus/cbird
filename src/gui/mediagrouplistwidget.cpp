@@ -63,6 +63,11 @@
 #include <sys/resource.h>  // setrlimit()
 #endif
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <psapi.h>
+#endif
+
 #define LW_LOW_FREE_MEMORY_KB (1024 * 1024) // start freeing memory here
 #define LW_MIN_FREE_MEMORY_KB (256 * 1024)  // allocations fail after this
 #define LW_MAX_CACHED_ROWS (5)
@@ -378,6 +383,7 @@ MediaGroupListWidget::MediaGroupListWidget(const MediaGroupList& list,
       loadMedia(page);
     else {
       startMovies();
+      autoComputeQuality(page);
       if (_preloadPage)
         loadMedia(_preloadPage);
     }
@@ -1499,6 +1505,142 @@ void MediaGroupListWidget::qualityScoreAction() {
   updateItems();
 }
 
+static int memUsageMB() {
+#ifdef Q_OS_WIN
+  PROCESS_MEMORY_COUNTERS pmc;
+  if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+    return int(pmc.WorkingSetSize / (1024 * 1024));
+  }
+#endif
+  return -1;
+}
+
+static QVariantMap computeQualityScores(const QVector<Media>& items) {
+  static const QStringList jpegSuffixes = {"jpg", "jpeg", "jpe", "jfif"};
+  QVariantMap results;
+
+  for (const Media& m : items) {
+    const QString tag = logSafePath(m.path());
+
+    // no-reference quality score
+    qDebug() << "[autoQ:bg] qualityScore start" << tag
+             << m.width() << "x" << m.height() << "mem:" << memUsageMB() << "MB";
+    try {
+      int score = qualityScore(m);
+      results[m.path() + ":quality-score"] = QString::number(score);
+      qDebug() << "[autoQ:bg] qualityScore done" << tag << "=" << score;
+    } catch (const std::exception& e) {
+      qWarning() << "[autoQ:bg] qualityScore EXCEPTION" << tag << e.what();
+    } catch (...) {
+      qWarning() << "[autoQ:bg] qualityScore UNKNOWN EXCEPTION" << tag;
+    }
+
+    qDebug() << "[autoQ:bg] after qualityScore mem:" << memUsageMB() << "MB";
+
+    // JPEG compression quality factor
+    if (m.type() == Media::TypeImage && jpegSuffixes.contains(m.suffix().toLower())) {
+      qDebug() << "[autoQ:bg] jpegQuality start" << tag;
+      QFile file(m.path());
+      if (file.open(QIODevice::ReadOnly)) {
+        QByteArray buffer = file.readAll();
+        auto* buf = new QBuffer(&buffer);
+        const JpegQuality jq = EstimateJpegQuality(buf);  // takes ownership, deletes buf
+        if (jq.ok && jq.isReliable) {
+          results[m.path() + ":jpeg-quality"] = QString::number(jq.quality);
+          qDebug() << "[autoQ:bg] jpegQuality done" << tag << "=" << jq.quality;
+        } else {
+          qDebug() << "[autoQ:bg] jpegQuality not reliable" << tag;
+        }
+      }
+    }
+  }
+
+  qDebug() << "[autoQ:bg] all done, results:" << results.count();
+  return results;
+}
+
+void MediaGroupListWidget::autoComputeQuality(MediaPage* page) {
+  // skip if quality was already computed or is in flight for this page
+  const int pageId = page->id;
+  if (_qualityPendingPages.contains(pageId)) {
+    return;
+  }
+  for (const Media& m : page->group) {
+    if (MediaPage::isAnalysis(m)) continue;
+    if (m.attributes().contains("jpeg-quality") || m.attributes().contains("quality-score")) {
+      return;
+    }
+  }
+  _qualityPendingPages.insert(pageId);
+
+  // collect shallow Media copies — QImage uses COW so this is cheap
+  QVector<Media> items;
+  qDebug() << "[autoQ] page" << pageId << "items:" << page->group.count()
+           << "mem:" << memUsageMB() << "MB";
+
+  for (int i = 0; i < page->group.count(); ++i) {
+    const Media& m = page->group[i];
+    if (MediaPage::isAnalysis(m)) continue;
+    if (m.image().isNull()) continue;
+
+    int minDim = qMin(m.width(), m.height());
+    if (minDim < 80) {
+      qDebug() << "[autoQ]  skip" << i << "too small" << m.width() << "x" << m.height();
+      continue;
+    }
+
+    items.append(m);
+    qDebug() << "[autoQ]  queue" << i << m.suffix() << m.width() << "x" << m.height()
+             << logSafePath(m.path());
+  }
+
+  if (items.isEmpty()) {
+    return;
+  }
+
+  // run ALL items sequentially in ONE background thread to avoid parallel memory pressure
+  auto* watcher = new QFutureWatcher<QVariantMap>(this);
+  connect(watcher, &QFutureWatcher<QVariantMap>::finished, this, [this, watcher, pageId]() {
+    qDebug() << "[autoQ] batch finished, page" << pageId << "mem:" << memUsageMB() << "MB";
+    _qualityPendingPages.remove(pageId);
+
+    QVariantMap results;
+    try {
+      results = watcher->result();
+    } catch (const std::exception& e) {
+      qWarning() << "[autoQ] batch exception:" << e.what();
+      watcher->deleteLater();
+      return;
+    } catch (...) {
+      qWarning() << "[autoQ] batch unknown exception";
+      watcher->deleteLater();
+      return;
+    }
+    watcher->deleteLater();
+
+    if (_currentRow < 0 || _currentRow >= _list.count()) return;
+    MediaPage* cur = currentPage();
+    if (cur->id != pageId) return;
+
+    // apply all results at once
+    int applied = 0;
+    for (Media& m : cur->group) {
+      if (MediaPage::isAnalysis(m)) continue;
+      const QString& p = m.path();
+      const QString qs = results.value(p + ":quality-score").toString();
+      const QString jq = results.value(p + ":jpeg-quality").toString();
+      if (!qs.isEmpty()) { m.setAttribute("quality-score", qs); ++applied; }
+      if (!jq.isEmpty()) { m.setAttribute("jpeg-quality", jq); ++applied; }
+    }
+    qDebug() << "[autoQ]  applied" << applied << "values";
+    _updateTimer.start(1000 / LW_UPDATE_HZ);
+  });
+
+  watcher->setFuture(QtConcurrent::run([items]() -> QVariantMap {
+    return computeQualityScores(items);
+  }));
+}
+
 void MediaGroupListWidget::templateMatchAction() {
   MediaGroup& group = _list[_currentRow]->group;
 
@@ -2433,6 +2575,7 @@ void MediaGroupListWidget::loadOne(MediaPage* page, int index) {
       if (w->page->isLoaded()) {
         if (_preloadPage) _loadTimer.start(LW_PRELOAD_DELAY);
         startMovies();
+        autoComputeQuality(w->page);
       }
     }
 
@@ -2582,6 +2725,20 @@ void MediaGroupListWidget::loadRow(int row, bool preloadNextRow) {
                      .arg(folderPath)
                      .arg(page->count())
                      .arg(page->info()));
+
+  // sort non-analysis items: largest resolution first, tiebreak by file size
+  {
+    MediaGroup& grp = _list[row]->group;
+    int n = page->countNonAnalysis();
+    if (n > 1) {
+      std::stable_sort(grp.begin(), grp.begin() + n,
+        [](const Media& a, const Media& b) {
+          if (a.resolution() != b.resolution())
+            return a.resolution() > b.resolution();
+          return QFileInfo(a.path()).size() > QFileInfo(b.path()).size();
+        });
+    }
+  }
 
   // create lw items and repaint
   updateItems();

@@ -422,7 +422,7 @@ void DesktopHelper::openImage(const QString& path) {
 #ifdef Q_OS_WIN
   presets = {
       {"Desktop Default", "DesktopServices"},
-      {"nomacs", "C:\Program Files\nomacs\nomacs.exe", "%zipPath(%1#/%2)"},
+      {"nomacs", "C:\\Program Files\\nomacs\\nomacs.exe", "%zipPath(%1#/%2)"},
   };
 #else
   presets = {
@@ -1326,6 +1326,14 @@ MessageContext::MessageContext(const QString& context) {
 MessageContext::~MessageContext() { MessageLog::context().setLocalData(_savedContext); }
 
 void MessageContext::reset(const QString& context) { MessageLog::context().setLocalData(context); }
+
+QString logSafePath(const QString& path) {
+  static const bool pii = QCoreApplication::arguments().contains("-pii");
+  if (pii) {
+    return QString::number(qHash(path), 16).left(8);
+  }
+  return path;
+}
 
 MessageLog::MessageLog() {
   std::set_terminate(qFlushMessageLog);
