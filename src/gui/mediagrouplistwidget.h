@@ -364,4 +364,9 @@ class MediaGroupListWidget : public QListWidget {
 
   /// Stop and delete all active QMovie instances
   void stopMovies();
+
+  /// Auto-compute JPEG quality and no-reference quality score in background
+  void autoComputeQuality(MediaPage* page);
+
+  QSet<int> _qualityPendingPages;  // page IDs with quality computation in flight
 };

@@ -1625,7 +1625,8 @@ QStringList Media::exifVersion() {
 }
 
 QVariantList Media::readEmbeddedMetadata(const QStringList& keys, const QString& type) const {
-  const MessageContext mc(path());
+  const QString logPath = logSafePath(path());
+  const MessageContext mc(logPath);
 
   QVariantList values;
   for (int i = 0; i < keys.count(); ++i) values.append(QVariant());
@@ -1735,7 +1736,9 @@ QVariantList Media::readEmbeddedMetadata(const QStringList& keys, const QString&
     }
 
   } catch (std::exception& e) {
-    qWarning() << "exif exception:" << path() << e.what();
+    QString msg = QString::fromUtf8(e.what());
+    msg.replace(path(), logPath);
+    qWarning() << "exif exception:" << logPath << msg;
   }
 
   return values;

@@ -164,7 +164,7 @@ int printCompletions(const char* argv0, const QStringList& args) {
                      "-help", "-version", "-about", "-verify", "-vacuum", "-select-result",
                      "-license", "-cwd", "-init", "-list-search-params", "-list-index-params",
                      "-weeds", /*"-track-weeds",*/ "-nuke-weeds", "-dump", "-list-formats",
-                     "-focus-first", "-no-delete", "-v", "-verbose", "-q", "-quiet", "-list-codecs",
+                     "-focus-first", "-no-delete", "-v", "-verbose", "-q", "-quiet", "-pii", "-list-codecs",
                      "-migrate",
 										 /* one argument */
                      "-select-id", "-select-sql", "-max-per-page", "-head", "-tail", "-theme"};
@@ -683,7 +683,8 @@ int main(int argc, char** argv) {
                                            qq("-v"),
                                            qq("-verbose"),
                                            qq("-q"),
-                                           qq("-quiet")};
+                                           qq("-quiet"),
+                                           qq("-pii")};
     return loggingArgs.contains(s);
   });
 
