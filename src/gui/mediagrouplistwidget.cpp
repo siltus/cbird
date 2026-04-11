@@ -51,6 +51,7 @@
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QMovie>
@@ -58,6 +59,7 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QApplication>
 
 #ifdef LW_RLIMIT
 #include <sys/resource.h>  // setrlimit()
@@ -84,6 +86,43 @@ static void maybeAppend(QStringList& sl, const QString& s) {
 
 static void maybeAppend(QStringList& sl, const QStringList& s) {
   for (const auto& str : s) maybeAppend(sl, str);
+}
+
+/// Query the physical keyboard modifier state (truly real-time).
+/// Qt's queryKeyboardModifiers() uses GetKeyState() on Windows which is
+/// message-queue based and stale during synchronous operations. We need
+/// GetAsyncKeyState() for the actual physical key state.
+static Qt::KeyboardModifiers physicalModifiers() {
+#ifdef Q_OS_WIN
+  Qt::KeyboardModifiers mods;
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= Qt::ShiftModifier;
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= Qt::ControlModifier;
+  if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= Qt::AltModifier;
+  if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) mods |= Qt::MetaModifier;
+  return mods;
+#else
+  return QGuiApplication::queryKeyboardModifiers();
+#endif
+}
+
+/// Release modifier keys that Qt thinks are pressed but are not physically held.
+/// Modal dialogs and synchronous operations can leave Qt's modifier state stale.
+static void resetStuckModifiers(QWidget* target) {
+  Qt::KeyboardModifiers physical = physicalModifiers();
+  Qt::KeyboardModifiers cached = QGuiApplication::keyboardModifiers();
+  Qt::KeyboardModifiers stuck = cached & ~physical;
+  if (!stuck) return;
+
+  auto release = [&](Qt::KeyboardModifier mod, Qt::Key key) {
+    if (stuck & mod) {
+      QKeyEvent ev(QEvent::KeyRelease, key, physical);
+      QApplication::sendEvent(target, &ev);
+    }
+  };
+  release(Qt::ControlModifier, Qt::Key_Control);
+  release(Qt::ShiftModifier, Qt::Key_Shift);
+  release(Qt::AltModifier, Qt::Key_Alt);
+  release(Qt::MetaModifier, Qt::Key_Meta);
 }
 
 /// Passed in/out of background jobs
@@ -688,7 +727,10 @@ void MediaGroupListWidget::keyPressEvent(QKeyEvent* event) {
   const auto validModifiers = Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier
                               | Qt::MetaModifier;
 
-  bool modifiers = event->modifiers() & validModifiers;
+  // use physical keyboard state via GetAsyncKeyState (Windows), not Qt's
+  // message-queue-based state which is stale during synchronous operations
+  Qt::KeyboardModifiers realMods = physicalModifiers();
+  bool modifiers = realMods & validModifiers;
   const QModelIndexList list = selectedIndexes();
 
   if (list.count() == 1 && !modifiers) {
@@ -702,8 +744,28 @@ void MediaGroupListWidget::keyPressEvent(QKeyEvent* event) {
     }
   }
 
-  // note: super must also take event; moveCursor doesn't move the selection
-  super::keyPressEvent(event);
+  // pass corrected event with physical modifiers to super, so Qt's selection
+  // behavior (Shift=extend, Ctrl=toggle) reflects actual keyboard state
+  if (realMods != event->modifiers()) {
+    QKeyEvent corrected(event->type(), event->key(), realMods,
+                        event->text(), event->isAutoRepeat(), event->count());
+    super::keyPressEvent(&corrected);
+  } else {
+    super::keyPressEvent(event);
+  }
+}
+
+void MediaGroupListWidget::mousePressEvent(QMouseEvent* event) {
+  // use physical keyboard state for the same reason as keyPressEvent
+  Qt::KeyboardModifiers realMods = physicalModifiers();
+
+  if (realMods != event->modifiers()) {
+    QMouseEvent corrected(event->type(), event->position(), event->globalPosition(),
+                          event->button(), event->buttons(), realMods);
+    super::mousePressEvent(&corrected);
+  } else {
+    super::mousePressEvent(event);
+  }
 }
 
 void MediaGroupListWidget::paintEvent(QPaintEvent* event) {
@@ -971,6 +1033,7 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
                            .arg(groupCount),
                        QMessageBox::No | QMessageBox::Yes, this);
     if (Theme::instance().execDialog(&dialog) != QMessageBox::Yes) return;
+    resetStuckModifiers(this);
   }
 
   if (deleteFiles && replace && items.count() == 1 && !page->isPair()) {
@@ -1015,6 +1078,7 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
                          qq("\"%1\"\n\nis locked for deletion.").arg(m.dirPath()), QMessageBox::Ok,
                          this);
       (void)Theme::instance().execDialog(&dialog);
+      resetStuckModifiers(this);
       continue;
     }
 
@@ -1044,6 +1108,8 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
         skipDeleteConfirmation = true;
       else if (button != QMessageBox::Yes)
         return;
+
+      resetStuckModifiers(this);
     }
 
     if (!DesktopHelper::moveToTrash(path)) return;
@@ -2743,7 +2809,8 @@ void MediaGroupListWidget::loadRow(int row, bool preloadNextRow) {
   // create lw items and repaint
   updateItems();
 
-  if (selected.isValid()) restoreSelectedItem(selected);
+  if (selected.isValid())
+    restoreSelectedItem(selected);
 
   // store row number, should not be used for control flow (use Page*)
   _list[row]->row = row;
