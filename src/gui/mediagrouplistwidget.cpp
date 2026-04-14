@@ -88,43 +88,6 @@ static void maybeAppend(QStringList& sl, const QStringList& s) {
   for (const auto& str : s) maybeAppend(sl, str);
 }
 
-/// Query the physical keyboard modifier state (truly real-time).
-/// Qt's queryKeyboardModifiers() uses GetKeyState() on Windows which is
-/// message-queue based and stale during synchronous operations. We need
-/// GetAsyncKeyState() for the actual physical key state.
-static Qt::KeyboardModifiers physicalModifiers() {
-#ifdef Q_OS_WIN
-  Qt::KeyboardModifiers mods;
-  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= Qt::ShiftModifier;
-  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= Qt::ControlModifier;
-  if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= Qt::AltModifier;
-  if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) mods |= Qt::MetaModifier;
-  return mods;
-#else
-  return QGuiApplication::queryKeyboardModifiers();
-#endif
-}
-
-/// Release modifier keys that Qt thinks are pressed but are not physically held.
-/// Modal dialogs and synchronous operations can leave Qt's modifier state stale.
-static void resetStuckModifiers(QWidget* target) {
-  Qt::KeyboardModifiers physical = physicalModifiers();
-  Qt::KeyboardModifiers cached = QGuiApplication::keyboardModifiers();
-  Qt::KeyboardModifiers stuck = cached & ~physical;
-  if (!stuck) return;
-
-  auto release = [&](Qt::KeyboardModifier mod, Qt::Key key) {
-    if (stuck & mod) {
-      QKeyEvent ev(QEvent::KeyRelease, key, physical);
-      QApplication::sendEvent(target, &ev);
-    }
-  };
-  release(Qt::ControlModifier, Qt::Key_Control);
-  release(Qt::ShiftModifier, Qt::Key_Shift);
-  release(Qt::AltModifier, Qt::Key_Alt);
-  release(Qt::MetaModifier, Qt::Key_Meta);
-}
-
 /// Passed in/out of background jobs
 class ImageWork : public QFutureWatcher<void> {
   NO_COPY_NO_DEFAULT(ImageWork, QFutureWatcher<void>)
@@ -646,6 +609,13 @@ MediaGroupListWidget::MediaGroupListWidget(const MediaGroupList& list,
 
   _maximized = WidgetHelper::restoreGeometry(this);
 
+  // Install app-level event filter to correct stale keyboard modifiers.
+  // On Windows, SHFileOperationW (trash) pumps the message loop, causing
+  // key-release messages to be missed. Qt's platform plugin reads GetKeyState()
+  // which lags behind the physical state. This filter uses GetAsyncKeyState()
+  // to detect and correct the discrepancy before Qt's shortcut system sees it.
+  qApp->installEventFilter(this);
+
   loadRow(0);
 
   int modelIndex = _list.at(0)->defaultModelIndex();
@@ -693,6 +663,7 @@ MediaGroupListWidget::MediaGroupListWidget(const MediaGroupList& list,
 
 MediaGroupListWidget::~MediaGroupListWidget() {
   qDebug("~MediaGroupListWidget");
+  qApp->removeEventFilter(this);
   stopMovies();
   qMessageLogCategoryEnable("qt.gui.imageio.jpeg", true);
   qMessageLogCategoryEnable("qt.gui.icc", true);
@@ -715,6 +686,57 @@ MediaGroupListWidget::~MediaGroupListWidget() {
 
 //---------- events -------------------//
 
+#ifdef Q_OS_WIN
+/// Read physical keyboard modifier state via GetAsyncKeyState (hardware, not message-queue)
+static Qt::KeyboardModifiers physicalModifiers() {
+  Qt::KeyboardModifiers mods = Qt::NoModifier;
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000)   mods |= Qt::ShiftModifier;
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000)  mods |= Qt::ControlModifier;
+  if (GetAsyncKeyState(VK_MENU) & 0x8000)     mods |= Qt::AltModifier;
+  if (GetAsyncKeyState(VK_LWIN) & 0x8000 ||
+      GetAsyncKeyState(VK_RWIN) & 0x8000)     mods |= Qt::MetaModifier;
+  return mods;
+}
+#endif
+
+bool MediaGroupListWidget::eventFilter(QObject* obj, QEvent* event) {
+#ifdef Q_OS_WIN
+  if (!_filteringEvent &&
+      (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease ||
+       event->type() == QEvent::ShortcutOverride)) {
+    auto* ke = static_cast<QKeyEvent*>(event);
+    // Don't correct modifier keys themselves
+    switch (ke->key()) {
+      case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta:
+        return false;
+      default: break;
+    }
+    const Qt::KeyboardModifiers validMods =
+        Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
+    Qt::KeyboardModifiers physical = physicalModifiers();
+    Qt::KeyboardModifiers eventMods = ke->modifiers() & validMods;
+    // Detect stale bits: event says modifier is held but physical key is released
+    Qt::KeyboardModifiers staleBits = eventMods & ~physical;
+    if (staleBits) {
+      Qt::KeyboardModifiers corrected = ke->modifiers() & ~staleBits;
+      qDebug() << "eventFilter: correcting stale modifiers"
+               << "key=" << Qt::Key(ke->key())
+               << "stale=" << staleBits
+               << "corrected=" << corrected;
+      _filteringEvent = true;
+      QKeyEvent correctedEvent(ke->type(), ke->key(), corrected,
+                               ke->nativeScanCode(), ke->nativeVirtualKey(),
+                               ke->nativeModifiers(), ke->text(),
+                               ke->isAutoRepeat(), ke->count());
+      QCoreApplication::sendEvent(obj, &correctedEvent);
+      _filteringEvent = false;
+      return true;  // filter out the stale-modifier original
+    }
+  }
+#endif
+  return QListWidget::eventFilter(obj, event);
+}
+
 void MediaGroupListWidget::closeEvent(QCloseEvent* event) {
   waitLoaders();
   super::closeEvent(event);
@@ -727,10 +749,8 @@ void MediaGroupListWidget::keyPressEvent(QKeyEvent* event) {
   const auto validModifiers = Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier
                               | Qt::MetaModifier;
 
-  // use physical keyboard state via GetAsyncKeyState (Windows), not Qt's
-  // message-queue-based state which is stale during synchronous operations
-  Qt::KeyboardModifiers realMods = physicalModifiers();
-  bool modifiers = realMods & validModifiers;
+  // event modifiers are corrected by eventFilter() before reaching here
+  bool modifiers = event->modifiers() & validModifiers;
   const QModelIndexList list = selectedIndexes();
 
   if (list.count() == 1 && !modifiers) {
@@ -744,28 +764,8 @@ void MediaGroupListWidget::keyPressEvent(QKeyEvent* event) {
     }
   }
 
-  // pass corrected event with physical modifiers to super, so Qt's selection
-  // behavior (Shift=extend, Ctrl=toggle) reflects actual keyboard state
-  if (realMods != event->modifiers()) {
-    QKeyEvent corrected(event->type(), event->key(), realMods,
-                        event->text(), event->isAutoRepeat(), event->count());
-    super::keyPressEvent(&corrected);
-  } else {
-    super::keyPressEvent(event);
-  }
-}
-
-void MediaGroupListWidget::mousePressEvent(QMouseEvent* event) {
-  // use physical keyboard state for the same reason as keyPressEvent
-  Qt::KeyboardModifiers realMods = physicalModifiers();
-
-  if (realMods != event->modifiers()) {
-    QMouseEvent corrected(event->type(), event->position(), event->globalPosition(),
-                          event->button(), event->buttons(), realMods);
-    super::mousePressEvent(&corrected);
-  } else {
-    super::mousePressEvent(event);
-  }
+  // note: super must also take event; moveCursor doesn't move the selection
+  super::keyPressEvent(event);
 }
 
 void MediaGroupListWidget::paintEvent(QPaintEvent* event) {
@@ -1033,7 +1033,6 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
                            .arg(groupCount),
                        QMessageBox::No | QMessageBox::Yes, this);
     if (Theme::instance().execDialog(&dialog) != QMessageBox::Yes) return;
-    resetStuckModifiers(this);
   }
 
   if (deleteFiles && replace && items.count() == 1 && !page->isPair()) {
@@ -1078,7 +1077,6 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
                          qq("\"%1\"\n\nis locked for deletion.").arg(m.dirPath()), QMessageBox::Ok,
                          this);
       (void)Theme::instance().execDialog(&dialog);
-      resetStuckModifiers(this);
       continue;
     }
 
@@ -1108,8 +1106,6 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
         skipDeleteConfirmation = true;
       else if (button != QMessageBox::Yes)
         return;
-
-      resetStuckModifiers(this);
     }
 
     if (!DesktopHelper::moveToTrash(path)) return;
@@ -1162,6 +1158,11 @@ void MediaGroupListWidget::removeSelection(bool deleteFiles, bool replace, bool 
   }
 
   itemCountChanged();
+
+  // SHFileOperationW (used by DesktopHelper::moveToTrash on Windows) internally
+  // pumps the Windows message loop, which can disrupt keyboard input routing.
+  // Re-activating the window restores it. No-op if already foreground.
+  if (auto* w = window()) w->activateWindow();
 }
 
 bool MediaGroupListWidget::selectionIsMoveable() {
