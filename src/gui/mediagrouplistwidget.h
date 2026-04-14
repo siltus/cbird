@@ -207,7 +207,7 @@ class MediaGroupListWidget : public QListWidget {
  private:
   void closeEvent(QCloseEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
-  void mousePressEvent(QMouseEvent* event) override;
+  bool eventFilter(QObject* obj, QEvent* event) override;
   void paintEvent(QPaintEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
 
@@ -343,6 +343,7 @@ class MediaGroupListWidget : public QListWidget {
   const int _origCount = 0; // count before any deletions for top progress bar
 
   bool _maximized = false; // true if window was maximized on last exit
+  bool _filteringEvent = false; // reentrancy guard for eventFilter
 
   QTimer _updateTimer; // delayed calls to updateItems()
 
