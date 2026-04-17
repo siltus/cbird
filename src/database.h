@@ -113,6 +113,9 @@ class Database {
   /// write timestamp for modification detection
   void writeTimestamp();
 
+  /// @return true if this is the first time the index is being created
+  bool isFirstTime() const { return _firstTime; }
+
   /**
    * Add processed media (typically from Scanner) to the index
    * @note all-or-nothing operation, using sql transactions

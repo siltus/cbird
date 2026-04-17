@@ -111,25 +111,19 @@ void Engine::update(bool wait, const QString& dirPath) {
       timeBefore = QFileInfo(oldName).metadataChangeTime();
     } while (false);
 
-  // check for missing data for already indexed items
-  if (scanner->indexParams().algos & (1 << SearchParams::AlgoVideo)) {
+  // check for missing .vdx data for already indexed videos
+  // skip on routine updates (only needed after crash/manual deletion)
+  if (db->isFirstTime() &&
+      (scanner->indexParams().algos & (1 << SearchParams::AlgoVideo))) {
     QVector<int> missingVideos;
     const MediaGroup videos = db->mediaWithType(Media::TypeVideo);
     PROGRESS_LOGGER(pl, "verifying video index:<PL> %percent %step videos", videos.count());
     int i = 0;
-    QElapsedTimer timer;
-    timer.start();
     for (const Media& m : videos) {
       QString vIndexPath = QString("%1/%2.vdx").arg(db->videoPath()).arg(m.id());
-      if (!QFileInfo(vIndexPath).exists()) {
+      if (!QFile::exists(vIndexPath)) {
         qWarning() << "missing index for" << m.path();
         missingVideos.append(m.id());
-      } else {
-        VideoIndex idx;
-        if (!idx.isValid(vIndexPath)) {
-          qWarning() << "invalid index for" << m.path();
-          missingVideos.append(m.id());
-        }
       }
       pl.stepRateLimited(i++);
     }
