@@ -185,8 +185,8 @@ void Engine::update(bool wait, const QString& dirPath) {
     }
   }
 
-  // if we want to can a subdir, we have to remove other files
-  QString path = db->path();
+  // if we want to scan a subdir, we have to remove other files
+  QStringList scanPaths;
   if (!dirPath.isEmpty()) {
     // note: path must be clean, absolute, and not ending in '/' to
     // work with scanDirectory. It may contain links or be a link itself
@@ -195,25 +195,34 @@ void Engine::update(bool wait, const QString& dirPath) {
       qCritical("given path is not a directory");
       return;
     }
-    path = QDir(dirPath).absolutePath();
-    if (!path.startsWith(db->path())) {
-      qCritical("given path: \"%s\" is not a subdirectory of \"%s\"", qUtf8Printable(path),
-                qUtf8Printable(db->path()));
+    const QString cleanPath = QDir(dirPath).absolutePath();
+
+    // validate dirPath is under any source
+    bool isUnderSource = false;
+    for (const QString& src : db->sourcePaths())
+      if (cleanPath.startsWith(src)) { isUnderSource = true; break; }
+
+    if (!isUnderSource) {
+      qCritical("given path: \"%s\" is not a subdirectory of any source",
+                qUtf8Printable(cleanPath));
       return;
     }
 
-    qDebug() << "clean subdir path" << path;
-    Q_ASSERT(!path.endsWith(lc('/')));
+    qDebug() << "clean subdir path" << cleanPath;
+    Q_ASSERT(!cleanPath.endsWith(lc('/')));
 
     QSet<QString> included;
     for (auto& p : std::as_const(indexedFiles))
-      if (p.startsWith(path)) included.insert(p);
+      if (p.startsWith(cleanPath)) included.insert(p);
 
     indexedFiles = included;
+    scanPaths.append(cleanPath);
+  } else {
+    scanPaths = db->sourcePaths();
   }
 
   // this defaults to db->path, but we may have changed it
-  qMessageLogSetRootPath(path);
+  qMessageLogSetRootPath(db->path());
 
   // if -i.algos changed try to manage the situation, prior to v0.8 there
   // was no management and -remove or rm -rf _index was needed
@@ -298,7 +307,8 @@ void Engine::update(bool wait, const QString& dirPath) {
 
     } while (false);
 
-  scanner->scanDirectory(path, indexedFiles, db->lastAdded());
+  for (const QString& scanPath : std::as_const(scanPaths))
+    scanner->scanDirectory(scanPath, indexedFiles, db->lastAdded());
 
   // we need a list of ids for fast removals, also we may want
   // to remove files that have issues (missing indexes etc)
@@ -315,16 +325,16 @@ void Engine::update(bool wait, const QString& dirPath) {
     // TODO: this takes a long time for big removals...could be threaded
     // NOTE: use db->indexedFiles() instead of querying each file
     for (const auto& path : std::as_const(sorted)) {
-      QString relPath = QDir(db->path()).relativeFilePath(path);
-      pl.stepRateLimited(i++, {relPath});
+      const QString displayPath = db->toVirtualPath(path);
+      pl.stepRateLimited(i++, {displayPath});
 
       const Media m = db->mediaWithPath(path);
       if (!m.isValid()) {
-        qWarning() << "invalid removal, non-indexed path:" << relPath;
+        qWarning() << "invalid removal, non-indexed path:" << displayPath;
         continue;
       }
 
-      if (scanner->indexParams().verbose) qDebug() << "removing id:" << m.id() << relPath;
+      if (scanner->indexParams().verbose) qDebug() << "removing id:" << m.id() << displayPath;
 
       toRemove.append(m.id());
     }

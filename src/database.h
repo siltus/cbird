@@ -27,9 +27,18 @@ class QSqlQuery;
 class QRecursiveMutex;
 class QReadWriteLock;
 
+/// Additional source directory for multi-folder indexing
+struct SourceDir {
+  QString name;  ///< virtual subfolder name (e.g. "photos")
+  QString path;  ///< absolute filesystem path (e.g. "D:/Photos")
+};
+
 /// Manage and query media in a directory
 class Database {
  public:
+  /// virtual path prefix for additional sources in the database
+  static constexpr const char* SourcePrefix = "_sources/";
+
   /**
    * @param path top-level directory to manage, if
    *        empty use CWD
@@ -60,6 +69,46 @@ class Database {
   /// @return last time anything was added, files modified
   ///         after this date are re-indexed
   QDateTime lastAdded();
+
+  /**
+   * @return all source directories (primary + additional)
+   * @note primary (path()) is always first
+   */
+  QStringList sourcePaths() const;
+
+  /// @return registered additional sources
+  const QVector<SourceDir>& sources() const { return _sources; }
+
+  /**
+   * Register an additional source directory
+   * @param name virtual subfolder name (must be unique, filesystem-safe)
+   * @param path absolute path to the source directory
+   * @return true on success
+   */
+  bool addSource(const QString& name, const QString& path);
+
+  /**
+   * Unregister an additional source directory
+   * @param name virtual subfolder name
+   * @return true on success
+   */
+  bool removeSource(const QString& name);
+
+  /**
+   * Convert an absolute filesystem path to a virtual path for DB storage
+   * @param absPath absolute path (e.g. "D:/Photos/vacation/img.jpg")
+   * @return virtual relative path (e.g. "_sources/photos/vacation/img.jpg")
+   * @note paths under the primary root return plain relative paths as before
+   */
+  QString toVirtualPath(const QString& absPath) const;
+
+  /**
+   * Convert a virtual DB path back to an absolute filesystem path
+   * @param dbPath path as stored in database
+   * @return absolute filesystem path
+   * @note non-virtual relative paths are resolved against path() as before
+   */
+  QString toRealPath(const QString& dbPath) const;
 
   /// write timestamp for modification detection
   void writeTimestamp();
@@ -294,6 +343,13 @@ class Database {
 
   /// Registered algorithms
   QVector<Index*> _algos;
+
+  /// Additional source directories
+  QVector<SourceDir> _sources;
+
+  /// Load/save source directory list from _index/sources.json
+  void loadSources();
+  void saveSources() const;
 
   /// Sql column index for "media" table
   struct {

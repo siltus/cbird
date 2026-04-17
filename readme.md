@@ -154,6 +154,45 @@ The index stores relative paths (to the indexed/root path), this makes the index
 
 Note that cbird does not not prevent broken links from occurring, the link check is temporary during the index update.
 
+Multiple Source Directories
+======================
+By default, cbird indexes a single directory tree. To find duplicates across multiple separate folders (e.g. `D:\Photos`, `E:\Downloads`), you can register additional source directories under a single index.
+
+#### Add a source directory
+```shell
+cbird -use <primary-path> -add-source <name> <path>
+```
+- `<name>` is a short label (no slashes), e.g. `photos`, `backups`
+- `<path>` is the absolute path to the directory
+
+#### List all sources
+```shell
+cbird -use <primary-path> -list-sources
+```
+
+#### Update all sources
+```shell
+cbird -use <primary-path> -update
+```
+This scans the primary directory and all registered sources.
+
+#### Remove a source
+```shell
+cbird -use <primary-path> -remove-source <name>
+```
+This unregisters the source. Files from that source remain in the index until the next `-update` removes them (since the scanner will no longer see them).
+
+#### Example workflow
+```shell
+cbird -use D:\Main -create -update                    # create index in D:\Main
+cbird -use D:\Main -add-source photos E:\Photos       # register E:\Photos
+cbird -use D:\Main -add-source backups F:\Backups     # register F:\Backups
+cbird -use D:\Main -update                            # scan all three directories
+cbird -use D:\Main -dups -show                        # find duplicates across all sources
+```
+
+The source configuration is stored in `_index/sources.json`. Internally, files from additional sources are stored in the database with a `_sources/<name>/` prefix, keeping the index self-contained and compatible with single-source usage.
+
 Using Weeds
 ======================
 The "weed" feature allows fast deletion of deleted files that reappear in the future. A weed record is a pair of file checksums, one is the weed/deleted file, the other is the original/retained file. When the weed shows up again, it can be deleted without inspection (`-nuke-weeds`)

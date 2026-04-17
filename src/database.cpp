@@ -28,6 +28,9 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QLockFile>
 #include <QtCore/QReadWriteLock>
 #include <QtSql/QSqlDatabase>
@@ -301,6 +304,8 @@ Database::Database(const QString& path_) {
 
   Q_ASSERT(dir.mkpath(cachePath()));
   Q_ASSERT(dir.mkpath(videoPath()));
+
+  loadSources();
 }
 
 Database::~Database() {
@@ -356,6 +361,169 @@ void Database::writeTimestamp() {
   f.write(qPrintable(date));
 }
 
+void Database::loadSources() {
+  const QString filePath = indexPath() + "/sources.json";
+  QFile f(filePath);
+  if (!f.exists()) return;
+  if (!f.open(QFile::ReadOnly)) {
+    qWarning() << "cannot read sources file:" << f.errorString();
+    return;
+  }
+
+  QJsonParseError err;
+  QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+  if (err.error != QJsonParseError::NoError) {
+    qWarning() << "sources.json parse error:" << err.errorString();
+    return;
+  }
+
+  _sources.clear();
+  const QJsonArray arr = doc.object().value("sources").toArray();
+  for (const QJsonValue& v : arr) {
+    QJsonObject obj = v.toObject();
+    SourceDir src;
+    src.name = obj.value("name").toString();
+    src.path = obj.value("path").toString();
+    if (src.name.isEmpty() || src.path.isEmpty()) {
+      qWarning() << "invalid source entry in sources.json, skipping";
+      continue;
+    }
+    src.path = QFileInfo(src.path).absoluteFilePath();
+    _sources.append(src);
+  }
+
+  if (!_sources.isEmpty())
+    qInfo() << "loaded" << _sources.count() << "additional source(s)";
+}
+
+void Database::saveSources() const {
+  const QString filePath = indexPath() + "/sources.json";
+
+  if (_sources.isEmpty()) {
+    QFile::remove(filePath);
+    return;
+  }
+
+  QJsonArray arr;
+  for (const SourceDir& s : _sources) {
+    QJsonObject obj;
+    obj["name"] = s.name;
+    obj["path"] = s.path;
+    arr.append(obj);
+  }
+
+  QJsonObject root;
+  root["sources"] = arr;
+
+  QFile f(filePath);
+  if (!f.open(QFile::WriteOnly | QFile::Truncate)) {
+    qCritical() << "cannot write sources file:" << f.errorString();
+    return;
+  }
+  f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+QStringList Database::sourcePaths() const {
+  QStringList result;
+  result.append(path());
+  for (const SourceDir& s : _sources)
+    result.append(s.path);
+  return result;
+}
+
+bool Database::addSource(const QString& name, const QString& srcPath) {
+  if (name.isEmpty() || name.contains('/') || name.contains('\\')) {
+    qCritical() << "-add-source: name must be non-empty and not contain path separators";
+    return false;
+  }
+
+  const QString absPath = QFileInfo(srcPath).absoluteFilePath();
+  if (!QFileInfo(absPath).isDir()) {
+    qCritical() << "-add-source: path is not a directory:" << absPath;
+    return false;
+  }
+
+  for (const SourceDir& s : _sources) {
+    if (s.name == name) {
+      qCritical() << "-add-source: name already registered:" << name;
+      return false;
+    }
+    if (s.path == absPath) {
+      qCritical() << "-add-source: path already registered as" << s.name;
+      return false;
+    }
+  }
+
+  if (absPath == path()) {
+    qCritical() << "-add-source: path is the primary index directory";
+    return false;
+  }
+
+  SourceDir src;
+  src.name = name;
+  src.path = absPath;
+  _sources.append(src);
+  saveSources();
+  qInfo() << "added source:" << name << "=>" << absPath;
+  return true;
+}
+
+bool Database::removeSource(const QString& name) {
+  for (int i = 0; i < _sources.count(); ++i) {
+    if (_sources[i].name == name) {
+      qInfo() << "removed source:" << name << "=>" << _sources[i].path;
+      _sources.removeAt(i);
+      saveSources();
+      return true;
+    }
+  }
+  qCritical() << "-remove-source: not found:" << name;
+  return false;
+}
+
+QString Database::toVirtualPath(const QString& absPath) const {
+  // check additional sources first (longest match wins for nested paths)
+  int bestLen = 0;
+  int bestIdx = -1;
+  for (int i = 0; i < _sources.count(); ++i) {
+    const QString& srcPath = _sources[i].path;
+    if (absPath.startsWith(srcPath) && absPath.length() > srcPath.length()
+        && absPath[srcPath.length()] == '/' && srcPath.length() > bestLen) {
+      bestLen = srcPath.length();
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx >= 0)
+    return QString(SourcePrefix) + _sources[bestIdx].name + absPath.mid(bestLen);
+
+  // primary root
+  if (absPath.startsWith(path()) && absPath.length() > path().length()
+      && absPath[path().length()] == '/')
+    return absPath.mid(path().length() + 1);
+
+  qWarning() << "toVirtualPath: path does not match any source:" << absPath;
+  return absPath;
+}
+
+QString Database::toRealPath(const QString& dbPath) const {
+  const QString prefix(SourcePrefix);
+  if (dbPath.startsWith(prefix)) {
+    const QString remainder = dbPath.mid(prefix.length());
+    const int sep = remainder.indexOf('/');
+    if (sep > 0) {
+      const QString name = remainder.left(sep);
+      for (const SourceDir& s : _sources)
+        if (s.name == name)
+          return s.path + remainder.mid(sep);
+    }
+    qWarning() << "toRealPath: unknown source in path:" << dbPath;
+    return dbPath;
+  }
+
+  return path() + "/" + dbPath;
+}
+
 void Database::add(MediaGroup& inMedia) {
   uint64_t then = nanoTime();
   uint64_t now;
@@ -391,7 +559,6 @@ void Database::add(MediaGroup& inMedia) {
   for (const Media& m : std::as_const(inMedia)) {
     Q_ASSERT(!m.path().isEmpty());
     Q_ASSERT(!m.md5().isEmpty());
-    Q_ASSERT(m.path().startsWith(path()));
 
     // Avoid violating unique constraint on media.path, and crashing app
     // this is slow, only useful if multiple processes can call add()
@@ -425,7 +592,7 @@ void Database::add(MediaGroup& inMedia) {
 
       id.append(m.id());
       type.append(m.type());
-      relPath.append(m.path().mid(path().length() + 1));
+      relPath.append(toVirtualPath(m.path()));
       width.append(m.width());
       height.append(m.height());
       md5.append(m.md5());
@@ -707,7 +874,7 @@ bool Database::move(Media& old, const QString& dstDir) {
     return true;
   }
 
-  const QString relPath = newPath.mid(path().length() + 1);
+  const QString relPath = toVirtualPath(newPath);
 
   bool ok = updatePaths({m}, {relPath});
   if (ok) old.setPath(newPath);
@@ -899,7 +1066,7 @@ void Database::fillMediaGroup(QSqlQuery& query, MediaGroup& media, int maxLen) {
       continue;
     }
 
-    const QString mediaPath = path() + "/" + relPath;
+    const QString mediaPath = toRealPath(relPath);
 
     Media m(mediaPath, type, query.value(_mediaIndex.width).toInt(),
             query.value(_mediaIndex.height).toInt(), query.value(_mediaIndex.md5).toString(),
@@ -1016,8 +1183,8 @@ void Database::loadKeyPoints(Media& m)
 */
 
 bool Database::mediaExists(const QString& path) {
-  QString relPath = path;
-  if (relPath.startsWith(this->path())) relPath = relPath.mid(this->path().length() + 1);
+  QString relPath = toVirtualPath(
+      QFileInfo(path).exists() ? QFileInfo(path).absoluteFilePath() : path);
 
   QSqlQuery query(connect());
 
@@ -1031,8 +1198,7 @@ bool Database::mediaExists(const QString& path) {
 }
 
 bool Database::mediaExistsLike(const QString& pathLike) {
-  QString relPath = pathLike;
-  if (relPath.startsWith(path())) relPath = relPath.mid(path().length() + 1);
+  QString relPath = toVirtualPath(pathLike);
 
   QSqlQuery query(connect());
 
@@ -1071,11 +1237,11 @@ Media Database::mediaWithId(int id) {
 }
 
 Media Database::mediaWithPath(const QString& path) {
-  QString relPath = path;
+  QString absPath = path;
   QFileInfo info(path);
-  if (info.exists()) relPath = info.absoluteFilePath();  // takes care of ./ ../ etc
+  if (info.exists()) absPath = info.absoluteFilePath();  // takes care of ./ ../ etc
 
-  if (relPath.startsWith(this->path())) relPath = relPath.mid(this->path().length() + 1);
+  const QString relPath = toVirtualPath(absPath);
 
   MediaGroup media = mediaWithSql(
       "select * from media "
@@ -1088,8 +1254,7 @@ Media Database::mediaWithPath(const QString& path) {
 }
 
 MediaGroup Database::mediaWithPathLike(const QString& path) {
-  QString relPath = path;
-  if (relPath.startsWith(this->path())) relPath = relPath.mid(this->path().length() + 1);
+  QString relPath = toVirtualPath(path);
 
   return mediaWithSql(
       "select * from media "
@@ -1553,7 +1718,7 @@ QSet<QString> Database::indexedFiles() {
   while (query.next()) {
     const QString relPath = query.value(0).toString();
     Q_ASSERT(!relPath.isEmpty());
-    paths.insert(path() + "/" + relPath);
+    paths.insert(toRealPath(relPath));
   }
 
   return paths;
@@ -1581,7 +1746,7 @@ QHash<QString, Database::Item> Database::indexedItems() {
     const mediaid_t mediaId = query.value(0).toUInt();
     const int type = query.value(1).toInt();
     const QString relPath = query.value(2).toString();
-    const QString absPath = path() + lc('/') + relPath;
+    const QString absPath = toRealPath(relPath);
 
     int algos = 0;
     for (const Index* i : std::as_const(_algos)) {
@@ -1655,7 +1820,7 @@ QHash<QString, mediaid_t> Database::indexedForAlgos(int algos, bool missing) {
 
     if ((isIndexed && !missing) || (!isIndexed && missing)) {
       Q_ASSERT(!relPath.isEmpty());
-      result.insert(path() + "/" + relPath, mediaId);
+      result.insert(toRealPath(relPath), mediaId);
     }
   }
 

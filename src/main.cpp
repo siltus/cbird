@@ -791,9 +791,8 @@ int main(int argc, char** argv) {
         }
       }
 
-      // make relative to index, required since database stores relative path
-      const QString dbPath = engine().db->path();
-      if (path.startsWith(dbPath)) path = path.mid(dbPath.length() + 1);
+      // make relative to index, required since database stores virtual relative paths
+      path = engine().db->toVirtualPath(path);
 
       // trailing wildcard is automatic
       if (!path.endsWith("*")) path.append("*");
@@ -955,6 +954,27 @@ int main(int argc, char** argv) {
       MediaGroup media = eng.db->mediaWithType(Media::TypeVideo);
       QString root = eng.db->videoPath();
       VideoIndex::migrate(media, root, indexParams);
+    } else if (arg == "-add-source") {
+      QString name = nextArg();
+      QString path = nextArg();
+      auto& eng = engine();
+      if (!eng.db->addSource(name, path))
+        return -1;
+    } else if (arg == "-remove-source") {
+      QString name = nextArg();
+      auto& eng = engine();
+      if (!eng.db->removeSource(name))
+        return -1;
+    } else if (arg == "-list-sources") {
+      auto& eng = engine();
+      qInfo() << "primary:" << eng.db->path();
+      const auto& sources = eng.db->sources();
+      if (sources.isEmpty()) {
+        qInfo() << "(no additional sources)";
+      } else {
+        for (const SourceDir& s : sources)
+          qInfo() << " " << s.name << "=>" << s.path;
+      }
     } else if (arg == "-about") {
       Scanner* sc = engine().scanner;
       Database* db = engine().db;
