@@ -1180,6 +1180,7 @@ class MessageLog {
   int _termColumns = -1;     // number of columns in the tty
 
   QString _homePath, _rootPath;
+  bool _piiMode = false;
   const bool _showTimestamp = getenv("CBIRD_LOG_TIMESTAMP");
   mutable const char* _lastColor = nullptr;  // format()
   mutable int64_t _lastTime = nanoTime();    // format()
@@ -1208,6 +1209,8 @@ class MessageLog {
   void flush();
 
   void setRootPath(const QString& rootPath) { _rootPath = rootPath; }
+  void setPiiMode(bool enabled) { _piiMode = enabled; }
+  bool piiMode() const { return _piiMode; }
   void setCategoryFilter(const QString& category, bool enable) {
     QMutexLocker locker(&_mutex);
     if (!enable) {
@@ -1259,6 +1262,10 @@ void qMessageLogSetRootPath(const QString& path) {
   MessageLog::instance().setRootPath(path);
 }
 
+void qMessageLogSetPiiMode(bool enabled) {
+  MessageLog::instance().setPiiMode(enabled);
+}
+
 Q_NORETURN void cbirdAbort() {
   qFlushMessageLog();
   _Exit(255);
@@ -1275,7 +1282,22 @@ void qColorMessageOutput(QtMsgType type, const QMessageLogContext& ctx, const QS
   QString threadContext;
   if (perThreadContext.hasLocalData()) threadContext = perThreadContext.localData();
 
-  MessageLog::instance().append(LogMsg{threadContext, type, msg, ctx.version, ctx.line, ctx.file,
+  QString safeMsg = msg;
+  if (MessageLog::instance().piiMode()) {
+    // Spaces belong to paths; redact unquoted tails conservatively rather than leak names.
+    static const QRegularExpression pathRe(
+        "([A-Za-z]:[/\\\\][^\"<>\\r\\n]+|[/\\\\]{2}[^\"<>\\r\\n]+|/[^\"<>\\r\\n]{4,})");
+    auto it = pathRe.globalMatch(safeMsg);
+    QStringList paths;
+    while (it.hasNext()) paths.append(it.next().captured());
+    std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) {
+      return a.length() > b.length();
+    });
+    for (const QString& p : std::as_const(paths))
+      safeMsg.replace(p, QString::number(qHash(p), 16).left(8));
+  }
+
+  MessageLog::instance().append(LogMsg{threadContext, type, safeMsg, ctx.version, ctx.line, ctx.file,
                                        ctx.function, ctx.category});
 
   if (type == QtMsgType::QtFatalMsg) {
@@ -1320,16 +1342,15 @@ MessageContext::MessageContext(const QString& context) {
   auto& threadContext = MessageLog::context();
   if (threadContext.hasLocalData() && !threadContext.localData().isEmpty())
     _savedContext = threadContext.localData();
-  threadContext.setLocalData(context);
+  threadContext.setLocalData(logSafePath(context));
 }
 
 MessageContext::~MessageContext() { MessageLog::context().setLocalData(_savedContext); }
 
-void MessageContext::reset(const QString& context) { MessageLog::context().setLocalData(context); }
+void MessageContext::reset(const QString& context) { MessageLog::context().setLocalData(logSafePath(context)); }
 
 QString logSafePath(const QString& path) {
-  static const bool pii = QCoreApplication::arguments().contains("-pii");
-  if (pii) {
+  if (MessageLog::instance().piiMode()) {
     return QString::number(qHash(path), 16).left(8);
   }
   return path;
@@ -1644,7 +1665,7 @@ QString MessageLog::format(const LogMsg& msg, int& outUnprintable) const {
   int noPathReplacement = _formatStr.indexOf("<NPR>");
   if (noPathReplacement >= 0)
     _formatStr.remove(noPathReplacement, 5);
-  else {
+  else if (!_piiMode) {
     _formatStr.replace(_rootPath, QLatin1String("."));
     _formatStr.replace(_homePath, QLatin1String("~"));
   }

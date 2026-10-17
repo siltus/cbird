@@ -113,9 +113,6 @@ class Database {
   /// write timestamp for modification detection
   void writeTimestamp();
 
-  /// @return true if this is the first time the index is being created
-  bool isFirstTime() const { return _firstTime; }
-
   /**
    * Add processed media (typically from Scanner) to the index
    * @note all-or-nothing operation, using sql transactions
@@ -159,6 +156,8 @@ class Database {
   MediaGroup mediaWithPathRegexp(const QString& exp);
   MediaGroup mediaWithMd5(const QString& md5);
   MediaGroup mediaWithType(int type);
+  /// @return just the IDs for media of the given type (lightweight, no full record load)
+  QVector<int> mediaIdsWithType(int type);
   [[deprecated]] MediaGroup mediaWithIds(const QVector<int>& ids); // doesn't seem to be used anywhere
   MediaGroup mediaWithSql(const QString& sql, const QString& placeholder="",
                           const QVariant& value=QVariant());

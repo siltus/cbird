@@ -150,7 +150,7 @@ void Scanner::scanDirectory(const QString& path, QSet<QString>& expected,
 
   // TODO: remove any expected path that doesn't start with path
   // we are wanting to index
-  qInfo() << "scanning:<PATH>" << _topDirPath;
+  qInfo() << "scanning:<PATH>" << logSafePath(_topDirPath);
   readDirectory(path, zipFiles, expected);
   progress(path);
 
@@ -161,16 +161,20 @@ void Scanner::scanDirectory(const QString& path, QSet<QString>& expected,
   if (_params.algos & (1 << SearchParams::AlgoVideo)) {
     if (_params.estimateCost) {
       qDebug() << "using slower but more accurate video job scheduling (-i.ljf)";
+      PROGRESS_LOGGER(pl, "estimating video costs:<PL> %percent %step videos", _videoQueue.count());
+      int idx = 0;
       QMap<QString, bool> threads;
       for (auto& path : std::as_const(_videoQueue)) {
         threads[path] = false;
 
         const MessageContext mc(path);
         VideoContext v;
-        if (v.open(path) < 0) continue;
+        if (v.open(path) < 0) { pl.stepRateLimited(idx++); continue; }
 
         threads[path] = v.metadata().supportsThreads;
+        pl.stepRateLimited(idx++);
       }
+      pl.end(idx);
 
       std::sort(_videoQueue.begin(), _videoQueue.end(),
                 [&threads](const QString& a, const QString& b) {
@@ -198,7 +202,7 @@ void Scanner::scanDirectory(const QString& path, QSet<QString>& expected,
 
     if (_params.verbose) {
       for (auto& p : std::as_const(_videoQueue))
-        qDebug() << "video job:" << QFileInfo(p).size() / 1024.0 / 1024.0 << p;
+        qDebug() << "video job:" << QFileInfo(p).size() / 1024.0 / 1024.0 << logSafePath(p);
     }
 
   } else if (_params.types & IndexParams::TypeVideo) {
@@ -207,7 +211,7 @@ void Scanner::scanDirectory(const QString& path, QSet<QString>& expected,
 
   if (_params.verbose) {
     for (auto& p : std::as_const(_imageQueue))
-      qDebug() << "image job:" << p;
+      qDebug() << "image job:" << logSafePath(p);
   }
 
   if (_params.dryRun) {
@@ -300,7 +304,7 @@ void Scanner::setError(const QString& path, const QString& error, bool print) {
   QMutexLocker locker(staticMutex());
   QStringList& list = (*errors())[path];
   if (!list.contains(error)) list.append(error);
-  if (print) qWarning() << path << error;
+  if (print) qWarning() << logSafePath(path) << error;
 }
 
 QMap<QString, QStringList>* Scanner::errors() {
@@ -314,7 +318,7 @@ QMutex* Scanner::staticMutex() {
 }
 
 void Scanner::progress(const QString& path) const {
-  const QString elided = qElide(path.mid(_topDirPath.length() + 1), 80);
+  const QString elided = qElide(logSafePath(path.mid(_topDirPath.length() + 1)), 80);
 
   QString status = QString::asprintf("<PL>"
                                      "images:<NUM>%'lld<RESET> "
@@ -332,7 +336,7 @@ void Scanner::readDirectory(const QString& dirPath,
                             QSet<QString>& expected) {
   const QDir dir(dirPath);
   if (!dir.exists()) {
-    qWarning("%s does not exist", qUtf8Printable(dirPath));
+    qWarning("%s does not exist", qUtf8Printable(logSafePath(dirPath)));
     return;
   }
 
@@ -341,7 +345,12 @@ void Scanner::readDirectory(const QString& dirPath,
 
   QDir::Filters filters = QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot;
 
+  int filesInDir = 0;
   for (const QString& name : dir.entryList(filters)) {
+    // periodic heartbeat for large directories
+    if (++filesInDir % 1000 == 0)
+      progress(dirPath);
+
     QString path = dirPath + "/" + name;
     const QFileInfo entry(path);
 
@@ -359,7 +368,7 @@ void Scanner::readDirectory(const QString& dirPath,
         continue;
       } else if (_params.verbose) {
         // TODO: check for broken symlinks?
-        qDebug() << "following link:" << path;
+        qDebug() << "following link:" << logSafePath(path);
       }
     }
 
@@ -372,8 +381,8 @@ void Scanner::readDirectory(const QString& dirPath,
         auto it = hash.find(id);
         if (it != hash.end()) {
           if (_params.showIgnored) {
-            qWarning() << "ignoring dup inode:" << path;
-            qWarning() << "    first instance:" << it.value();
+            qWarning() << "ignoring dup inode:" << logSafePath(path);
+            qWarning() << "    first instance:" << logSafePath(it.value());
           }
           _ignoredFiles++;
           setError(path, ErrorDupInode, _params.showIgnored);
@@ -398,7 +407,7 @@ void Scanner::readDirectory(const QString& dirPath,
       // if link resolves within root we can automatically remove
       // potential duplicates; otherwise we just follow it as normal
       if (canonical.startsWith(_topDirPath)) {
-        if (_params.verbose) qDebug() << "using resolved link:" << canonical;
+        if (_params.verbose) qDebug() << "using resolved link:" << logSafePath(canonical);
         path = canonical;
         _imageQueue.removeOne(path);
         _videoQueue.removeOne(path);
@@ -416,7 +425,7 @@ void Scanner::readDirectory(const QString& dirPath,
       }
       _modifiedFiles++;
       // files with invalid modtimes will always be re-indexed
-      if (entry.lastModified() > _startTime) qWarning() << "future modtime:" << path;
+      if (entry.lastModified() > _startTime) qWarning() << "future modtime:" << logSafePath(path);
     }
 
     if (entry.isFile()) {
@@ -425,7 +434,7 @@ void Scanner::readDirectory(const QString& dirPath,
       //                   qPrintable(path));
       //            fflush(stdout);
       if (_activeWork.contains(path)) {
-        qDebug() << "skipping active work" << path;
+        qDebug() << "skipping active work" << logSafePath(path);
         continue;
       }
 
@@ -448,6 +457,9 @@ void Scanner::readDirectory(const QString& dirPath,
         if (entry.size() < _params.minFileSize) {
           _ignoredFiles++;
           setError(path, ErrorTooSmall, _params.showIgnored);
+        } else if (!VideoContext::probeInputFormat(path)) {
+          _ignoredFiles++;
+          setError(path, ErrorUnsupported, _params.showIgnored);
         } else if (!isQueued(path))
           _videoQueue.append(path);
       } else if (_archiveTypes.contains(type)) {
@@ -588,12 +600,9 @@ void Scanner::finish() {
 }
 
 int Scanner::totalThreadCount() const {
-//  int extraThreads = 0;
-//  for (const auto* w : _work)
-//    if (w->future().isRunning())
-//      extraThreads += w->property("childThreads").toInt();
-
-  return QThreadPool::globalInstance()->activeThreadCount() + _extraThreads;
+  // use our own tracked work count instead of QThreadPool::activeThreadCount()
+  // which can temporarily exceed maxThreadCount during thread cleanup
+  return _activeWork.count() + _extraThreads;
 }
 
 void Scanner::processOne() {
@@ -731,8 +740,8 @@ void Scanner::processOne() {
 
     if (!f.isCanceled()) {
       _activeWork.insert(path);
+      _extraThreads += childThreads;  // track immediately, not on started() signal
       QFutureWatcher<IndexResult>* w = new QFutureWatcher<IndexResult>;
-      connect(w, SIGNAL(started()), this, SLOT(processStarted()));
       connect(w, SIGNAL(finished()), this, SLOT(processFinished()));
       w->setFuture(f);
       w->setProperty("path", path);
@@ -755,13 +764,6 @@ void Scanner::processOne() {
       delay = 1;
   }
   if (delay >= 0) QTimer::singleShot(delay, this, &Scanner::processOne);
-}
-
-void Scanner::processStarted() {
-  auto w = dynamic_cast<QFutureWatcher<IndexResult>*>(sender());
-  if (!w) return;
-
-  _extraThreads += w->property("childThreads").toInt();
 }
 
 void Scanner::processFinished() {
@@ -789,7 +791,7 @@ void Scanner::processFinished() {
 
       // retry the failed file on a different accel or sw codec
       if (!result.ok) {
-        qDebug() << "forked accel:" << result.accelIndex << "failed, retrying" << result.path;
+        qDebug() << "forked accel:" << result.accelIndex << "failed, retrying" << logSafePath(result.path);
         _accel[result.accelIndex].failures.insert(result.path);
         _videoQueue.prepend(result.path);
       }

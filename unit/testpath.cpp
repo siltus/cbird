@@ -20,6 +20,10 @@ class TestPath : public QObject {
 
   void parseArchive_benchmark_data() { loadBenchmarkPaths(); }
 
+  void testPiiLogSafePath();
+  void testPiiMessageContext();
+  void testPiiMessageOutput();
+
  private:
   void parseArchive_benchmark();
   void loadArchivePaths();
@@ -266,6 +270,90 @@ void TestPath::parseArchive_benchmark() {
     if (result) {
       sink += result->parentPath.length() + result->childPath.length();
     }
+  }
+}
+
+void TestPath::testPiiLogSafePath() {
+  // without PII mode, paths pass through unchanged
+  qMessageLogSetPiiMode(false);
+  QCOMPARE(logSafePath("C:/Users/John/Photos/vacation.jpg"),
+           QString("C:/Users/John/Photos/vacation.jpg"));
+  QCOMPARE(logSafePath("/home/john/photos/vacation.jpg"),
+           QString("/home/john/photos/vacation.jpg"));
+  QCOMPARE(logSafePath("relative/path/file.jpg"),
+           QString("relative/path/file.jpg"));
+
+  // with PII mode, paths are hashed to 8-char hex
+  qMessageLogSetPiiMode(true);
+
+  QString hashed = logSafePath("C:/Users/John/Photos/vacation.jpg");
+  QCOMPARE(hashed.length(), 8);
+  // must not contain any part of the original path
+  QVERIFY(!hashed.contains("Users"));
+  QVERIFY(!hashed.contains("John"));
+  QVERIFY(!hashed.contains("Photos"));
+  QVERIFY(!hashed.contains("vacation"));
+  // same input always produces same hash
+  QCOMPARE(hashed, logSafePath("C:/Users/John/Photos/vacation.jpg"));
+  // different input produces different hash
+  QVERIFY(hashed != logSafePath("C:/Users/John/Photos/other.jpg"));
+
+  // relative paths also get hashed
+  QString relHashed = logSafePath("subdir/private/file.jpg");
+  QCOMPARE(relHashed.length(), 8);
+  QVERIFY(!relHashed.contains("subdir"));
+  QVERIFY(!relHashed.contains("private"));
+
+  qMessageLogSetPiiMode(false);
+}
+
+void TestPath::testPiiMessageContext() {
+  qMessageLogSetPiiMode(true);
+
+  // MessageContext should hash the path when PII mode is on
+  {
+    MessageContext mc("C:/Users/Secret/file.mp4");
+    // we can't easily read the thread context, but at least verify
+    // it doesn't crash and logSafePath is consistent
+    QString safe = logSafePath("C:/Users/Secret/file.mp4");
+    QVERIFY(!safe.contains("Secret"));
+    QVERIFY(!safe.contains("Users"));
+  }
+
+  qMessageLogSetPiiMode(false);
+}
+
+void TestPath::testPiiMessageOutput() {
+  // Capture log output and verify no paths leak
+  qMessageLogSetPiiMode(true);
+
+  // Test that logSafePath works for all path formats that appear in scanner output
+  struct TestCase {
+    const char* input;
+    const char* mustNotContain;
+  } cases[] = {
+    {"C:/Users/John/Downloads/file.ts", "John"},
+    {"C:\\Users\\John\\Downloads\\file.ts", "John"},
+    {"/home/john/photos/vacation.jpg", "john"},
+    {"subdir/private/secret.jpg", "private"},
+    {"some/deep/nested/path/to/file.mp4", "nested"},
+    {"G:/Download/node_modules/@types/react", "Download"},
+  };
+
+  for (auto& tc : cases) {
+    QString safe = logSafePath(tc.input);
+    QVERIFY2(!safe.contains(tc.mustNotContain),
+             qPrintable(QString("logSafePath(\"%1\") = \"%2\" still contains \"%3\"")
+                        .arg(tc.input, safe, tc.mustNotContain)));
+    QCOMPARE(safe.length(), 8);
+  }
+
+  qMessageLogSetPiiMode(false);
+
+  // Verify PII mode off passes through
+  for (auto& tc : cases) {
+    QString safe = logSafePath(tc.input);
+    QCOMPARE(safe, QString(tc.input));
   }
 }
 

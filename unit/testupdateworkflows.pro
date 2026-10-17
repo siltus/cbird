@@ -1,0 +1,9 @@
+QT = core gui sql testlib
+CONFIG += console c++17 release
+CONFIG -= app_bundle debug_and_release
+TEMPLATE = app
+TARGET = runtest-testupdateworkflows
+DESTDIR = $$_PRO_FILE_PWD_/../_win32/workflow-tests
+OBJECTS_DIR = $$DESTDIR/obj
+MOC_DIR = $$OBJECTS_DIR
+SOURCES = testupdateworkflows.cpp

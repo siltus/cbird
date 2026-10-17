@@ -121,6 +121,9 @@ class VideoContext {
   static void listFormats();
   static void listCodecs();
 
+  /// probe file contents with FFmpeg without opening a decoder
+  static bool probeInputFormat(const QString& path);
+
   VideoContext();
   ~VideoContext();
 

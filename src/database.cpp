@@ -1285,6 +1285,18 @@ MediaGroup Database::mediaWithType(int type) {
       ":type", type);
 }
 
+QVector<int> Database::mediaIdsWithType(int type) {
+  QSqlQuery query(connect());
+  if (!query.prepare("select id from media where type=:type")) SQL_FATAL(prepare);
+  query.bindValue(":type", type);
+  if (!query.exec()) SQL_FATAL(exec);
+
+  QVector<int> ids;
+  while (query.next())
+    ids.append(query.value(0).toInt());
+  return ids;
+}
+
 int Database::countType(int type) {
   QSqlQuery query(connect());
   if (!query.prepare("select count(*) from media "

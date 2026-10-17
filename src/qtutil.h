@@ -179,6 +179,9 @@ void qFlushMessageLog();
 /// remove this prefix from paths appearing in logs
 void qMessageLogSetRootPath(const QString& path);
 
+/// enable privacy mode, hashing paths in log output
+void qMessageLogSetPiiMode(bool enabled);
+
 /// if enable=false, ignore logs with matching QMessageLogContext::category
 void qMessageLogCategoryEnable(const QString& category, bool enable);
 

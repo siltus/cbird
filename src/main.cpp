@@ -642,6 +642,9 @@ int main(int argc, char** argv) {
     QLoggingCategory::setFilterRules(logFilter);
   }
 
+  if (args.contains("-pii"))
+    qMessageLogSetPiiMode(true);
+
   // if we are pretty sure there is no display connected we can
   // enable headless mode
   bool noDisplay = false;

@@ -34,6 +34,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QTextStream>
 
 Engine::Engine(const QString& path, const IndexParams& params) {
   db = new Database(path);
@@ -95,6 +96,13 @@ void Engine::update(bool wait, const QString& dirPath) {
   QElapsedTimer timer;
   timer.start();
 
+  // timing trace log
+  QFile traceFile(db->indexPath() + "/update-trace.log");
+  traceFile.open(QFile::WriteOnly | QFile::Truncate);
+  QTextStream trace(&traceFile);
+  auto elapsed = [&]() { return QString::number(timer.elapsed()); };
+  trace << "update started at " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+
   VideoContext::avLoggerSetLogFile(db->indexPath() + "/video-error.log");
 
   // metadataChangeTime might not work on this filesystem
@@ -111,29 +119,49 @@ void Engine::update(bool wait, const QString& dirPath) {
       timeBefore = QFileInfo(oldName).metadataChangeTime();
     } while (false);
 
+  trace << elapsed() << "ms: modtime check done\n";
+  trace.flush();
+
   // check for missing .vdx data for already indexed videos
-  // skip on routine updates (only needed after crash/manual deletion)
-  if (db->isFirstTime() &&
-      (scanner->indexParams().algos & (1 << SearchParams::AlgoVideo))) {
+  if (scanner->indexParams().algos & (1 << SearchParams::AlgoVideo)) {
     QVector<int> missingVideos;
-    const MediaGroup videos = db->mediaWithType(Media::TypeVideo);
-    PROGRESS_LOGGER(pl, "verifying video index:<PL> %percent %step videos", videos.count());
+    const QVector<int> videoIds = db->mediaIdsWithType(Media::TypeVideo);
+
+    trace << elapsed() << "ms: mediaIdsWithType query done, " << videoIds.count() << " videos\n";
+    trace.flush();
+
+    // list .vdx directory once instead of stat-checking each file
+    QSet<QString> vdxFiles;
+    const QDir vdxDir(db->videoPath());
+    for (const QString& name : vdxDir.entryList({"*.vdx"}, QDir::Files))
+      vdxFiles.insert(name);
+
+    trace << elapsed() << "ms: vdx directory listed, " << vdxFiles.count() << " files\n";
+    trace.flush();
+
+    PROGRESS_LOGGER(pl, "verifying video index:<PL> %percent %step videos", videoIds.count());
     int i = 0;
-    for (const Media& m : videos) {
-      QString vIndexPath = QString("%1/%2.vdx").arg(db->videoPath()).arg(m.id());
-      if (!QFile::exists(vIndexPath)) {
-        qWarning() << "missing index for" << m.path();
-        missingVideos.append(m.id());
-      }
+    for (int id : std::as_const(videoIds)) {
+      if (!vdxFiles.contains(QString("%1.vdx").arg(id)))
+        missingVideos.append(id);
       pl.stepRateLimited(i++);
     }
     pl.end(i);
 
+    trace << elapsed() << "ms: .vdx verification done, " << missingVideos.count() << " missing\n";
+    trace.flush();
+
     if (!scanner->indexParams().dryRun) db->remove(missingVideos);
   }
 
+  trace << elapsed() << "ms: video verification complete\n";
+  trace.flush();
+
   // if path is still present after scanning, remove from the index
   QSet<QString> indexedFiles = db->indexedFiles();
+
+  trace << elapsed() << "ms: indexedFiles() done, " << indexedFiles.count() << " files\n";
+  trace.flush();
 
   if (false) {
     // if the stored database paths are not canonical there
@@ -169,11 +197,11 @@ void Engine::update(bool wait, const QString& dirPath) {
       if ((canPath != "" && canPath.startsWith(db->path()) && relPath != canRelPath) ||
           relPath.contains("//"))
         qCritical("invalid path in database:\n\tcanonical=%s\n\tdatabase =%s",
-                  qUtf8Printable(canRelPath), qUtf8Printable(relPath));
+                  qUtf8Printable(logSafePath(canRelPath)), qUtf8Printable(logSafePath(relPath)));
       i++;
       if (progress++ == 10) {
         progress = 0;
-        qInfo("<NC>%s: validating index <PL> %d/%lld", qUtf8Printable(db->path()), i,
+        qInfo("<NC>%s: validating index <PL> %d/%lld", qUtf8Printable(logSafePath(db->path())), i,
               paths.count());
       }
     }
@@ -198,11 +226,11 @@ void Engine::update(bool wait, const QString& dirPath) {
 
     if (!isUnderSource) {
       qCritical("given path: \"%s\" is not a subdirectory of any source",
-                qUtf8Printable(cleanPath));
+                qUtf8Printable(logSafePath(cleanPath)));
       return;
     }
 
-    qDebug() << "clean subdir path" << cleanPath;
+    qDebug() << "clean subdir path" << logSafePath(cleanPath);
     Q_ASSERT(!cleanPath.endsWith(lc('/')));
 
     QSet<QString> included;
@@ -223,6 +251,9 @@ void Engine::update(bool wait, const QString& dirPath) {
   if (scanner->indexParams().sync) {
     qDebug() << "checking for algos changes... (disable with -i.sync false)";
     const auto indexedItems = db->indexedItems();
+
+    trace << elapsed() << "ms: indexedItems() done, " << indexedItems.count() << " items\n";
+    trace.flush();
 
     const IndexParams& requestParams = scanner->indexParams();
     const int requestAlgos = requestParams.algos;
@@ -274,6 +305,9 @@ void Engine::update(bool wait, const QString& dirPath) {
     indexedFiles = keep;
   }
 
+  trace << elapsed() << "ms: algos sync done\n";
+  trace.flush();
+
   // finish modtime check, hopefully enough time elapsed
   if (!useMetadataTime && timeBefore.isValid()) do {
       QThread::msleep(qMax(500 - timer.elapsed(), 0));
@@ -301,8 +335,14 @@ void Engine::update(bool wait, const QString& dirPath) {
 
     } while (false);
 
+  trace << elapsed() << "ms: pre-scan setup done, scanning " << scanPaths.count() << " source(s)\n";
+  trace.flush();
+
   for (const QString& scanPath : std::as_const(scanPaths))
     scanner->scanDirectory(scanPath, indexedFiles, db->lastAdded());
+
+  trace << elapsed() << "ms: scanDirectory done, " << indexedFiles.count() << " files to remove\n";
+  trace.flush();
 
   // we need a list of ids for fast removals, also we may want
   // to remove files that have issues (missing indexes etc)
@@ -319,7 +359,7 @@ void Engine::update(bool wait, const QString& dirPath) {
     // TODO: this takes a long time for big removals...could be threaded
     // NOTE: use db->indexedFiles() instead of querying each file
     for (const auto& path : std::as_const(sorted)) {
-      const QString displayPath = db->toVirtualPath(path);
+      const QString displayPath = logSafePath(db->toVirtualPath(path));
       pl.stepRateLimited(i++, {displayPath});
 
       const Media m = db->mediaWithPath(path);
@@ -342,6 +382,8 @@ void Engine::update(bool wait, const QString& dirPath) {
       db->remove(toRemove);
   }
 
+  trace << elapsed() << "ms: removals done, " << toRemove.count() << " removed\n";
+
   if (wait) {
     scanner->finish();
     // at this point, we should be done writing stuff
@@ -351,6 +393,9 @@ void Engine::update(bool wait, const QString& dirPath) {
 
     qInfo() << "update complete";
   }
+
+  trace << elapsed() << "ms: update complete\n";
+  trace.flush();
 }
 
 void Engine::stopUpdate(bool wait) {

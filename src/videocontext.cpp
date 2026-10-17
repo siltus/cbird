@@ -54,6 +54,26 @@ static QString avErrorString(int err) {
   return str;
 }
 
+bool VideoContext::probeInputFormat(const QString& path) {
+  AVIOContext* input = nullptr;
+  int err = avio_open(&input, qUtf8Printable(path), AVIO_FLAG_READ);
+  if (err < 0) {
+    qWarning() << "cannot open input for format probing" << logSafePath(path) << avErrorString(err);
+    return false;
+  }
+
+  const AVInputFormat* format = nullptr;
+  // An empty URL prevents filename extensions from overriding the content probe.
+  err = av_probe_input_buffer2(input, &format, "", nullptr, 0, 0);
+  const int closeError = avio_closep(&input);
+  if (closeError < 0) {
+    qWarning() << "cannot close input after format probing" << logSafePath(path)
+               << avErrorString(closeError);
+    return false;
+  }
+  return err >= 0 && format != nullptr;
+}
+
 static void avImgToQImg(uint8_t* planes[4], int linesizes[4], int width, int height, QImage& dst,
                         AVPixelFormat fmt = AV_PIX_FMT_YUV420P) {
   const QSize size(width, height);

@@ -238,8 +238,6 @@ class Scanner : public QObject {
   // schedule the next call to processOne()
   void processOne();
 
-  void processStarted();
-
   // called when a QFuture<Media> finishes processing,
   // at which point we call fileAdded() and remove it from _work
   void processFinished();
